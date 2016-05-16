@@ -92,7 +92,7 @@ sub main {
         Local => $SOCK_PATH,
         Listen => 1,
     ) or die "Failed to open server: $!\n";
-    chmod '0660', $SOCK_PATH or die "Failed to set socket permissions: $!\n";
+    chmod 0660, $SOCK_PATH or die "Failed to set socket permissions: $!\n";
     my $gid = getgrnam('network') or die "Failed to get network gid: $!\n";
     chown 0, $gid, $SOCK_PATH or die "Failed to set socket ownership: $!\n";
 
@@ -113,7 +113,7 @@ sub main {
                     $fh->close();
                     next;
                 };
-                $fh->write($result);
+                $fh->write("$result\n");
             }
         }
     }
@@ -121,4 +121,5 @@ sub main {
     return;
 }
 
+local $SIG{PIPE} = 'IGNORE';
 main();
