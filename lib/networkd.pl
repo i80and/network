@@ -6,6 +6,7 @@ use Carp;
 use Unix::Pledge;
 use IO::Socket::UNIX;
 use IO::Select;
+use JSON::PP;
 use Fcntl;
 
 local $ENV{'PATH'} = '/bin:/sbin:/usr/bin:/usr/sbin';
@@ -19,15 +20,46 @@ sub run {
     return $output;
 }
 
+sub check_iface {
+    my ($iface) = @_;
+    my ($checked) = $iface =~ m/^([a-z]+[0-9]*)$/ig
+        or die "Invalid interface: '$iface'";
+    return $checked;
+}
+
 sub list_ifaces {
     my %pseudo = map {($_, undef)} split(' ', run('/sbin/ifconfig -C'));
-    my @all_devices = run('/sbin/ifconfig') =~ /^(\w+[0-9]*): /gm;
-    my @devices = grep {
-        my @prefix = $_ =~ /(^[a-z]+)/;
-        !exists $pseudo{$prefix[0]}
-    } @all_devices;
 
-    return @devices;
+    my @lines = split('\n', run('/sbin/ifconfig'));
+    my %ifaces = ();
+    my $cur_iface;
+    foreach my $line (@lines) {
+        my @terms = $line =~ /^([a-z]+[0-9]*): flags=[0-9]+<(\S*)> mtu ([0-9]+)/;
+        if(@terms) {
+            my ($name, $flags, $mtu) = @terms;
+            my %entry = ();
+            @entry{'flags'} = [split(',', $flags)];
+            $entry{'mtu'} = int($mtu);
+            $ifaces{$name} = \%entry;
+
+            $cur_iface = $name;
+            next;
+        }
+
+        if(!defined $cur_iface) { next; }
+        @terms = $line =~ /^\s+(\w+):? (.+)/;
+        if($#terms < 1) { next; }
+        $ifaces{$cur_iface}{$terms[0]} = $terms[1];
+    }
+
+    while(each %ifaces) {
+        my @prefix = $_ =~ /(^[a-z]+)/;
+        if(exists $pseudo{$prefix[0]}) {
+            delete $ifaces{$_};
+        }
+    }
+
+    return %ifaces;
 }
 
 sub autoconfigure {
@@ -40,17 +72,18 @@ sub autoconfigure {
 }
 
 sub handle_list {
-    my @ifaces = list_ifaces();
-    return 'ok ' . join(' ', @ifaces);
+    my %ifaces = list_ifaces();
+    return 'ok ' . encode_json \%ifaces;
 }
 
 sub handle_connect {
     my ($interface) = @_;
-    my @ifaces = grep { $_ eq $interface } list_ifaces();
-    if($#ifaces < 0) {
+    $interface = check_iface($interface);
+
+    my %ifaces = list_ifaces();
+    if(!exists $ifaces{$interface}) {
         return 'error NoSuchInterface';
     }
-    $interface = $ifaces[0];
 
     # If there is no hostname.interface, set it up to use dhcp.
     autoconfigure($interface);
@@ -61,13 +94,18 @@ sub handle_connect {
 
 sub handle_disconnect {
     my ($interface) = @_;
-    my @ifaces = grep { $_ eq $interface } list_ifaces();
-    if($#ifaces < 0) {
+    $interface = check_iface($interface);
+
+    my %ifaces = list_ifaces();
+    if(!exists $ifaces{$interface}) {
         return 'error NoSuchInterface';
     }
-    $interface = $ifaces[0];
     run("/sbin/ifconfig '$interface' down");
     return 'ok';
+}
+
+sub handle_status {
+    my @ifaces = list_ifaces();
 }
 
 my %DISPATCH = ();
