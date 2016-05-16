@@ -59,9 +59,21 @@ sub handle_connect {
     return 'ok';
 }
 
+sub handle_disconnect {
+    my ($interface) = @_;
+    my @ifaces = grep { $_ eq $interface } list_ifaces();
+    if($#ifaces < 0) {
+        return 'error NoSuchInterface';
+    }
+    $interface = $ifaces[0];
+    run("/sbin/ifconfig '$interface' down");
+    return 'ok';
+}
+
 my %DISPATCH = ();
 $DISPATCH{'list'} = \&handle_list;
 $DISPATCH{'connect'} = \&handle_connect;
+$DISPATCH{'disconnect'} = \&handle_disconnect;
 
 sub handle {
     my ($sock) = @_;

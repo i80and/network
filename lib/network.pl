@@ -88,7 +88,7 @@ network - Network management client
 
 network list
 
-network connect <interface>
+network (connect | disconnect) <interface>
 
 network --prompt
 
