@@ -43,6 +43,8 @@ sub prompt {
             print "$response\n";
         }
     }
+
+    return;
 }
 
 sub main {
