@@ -15,7 +15,8 @@ sub send_message {
     my ($socket, $command) = @_;
     $socket->send("$command\n");
     my $response = <$socket>;
-    if(defined $response) { chomp $response; }
+    if(!defined $response) { $response = ''; }
+    chomp $response;
 
     my @parts = $response =~ /^(ok|error)(?: (.*))?/;
     if($#parts < 0) { die "Bad response\n"; }
