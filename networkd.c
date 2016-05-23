@@ -145,8 +145,8 @@ void handle_connect(FILE* sock, const char* args) {
     service_send(&service_write_ibuf, WRITE_AUTOCONFIGURE, args);
     service_pop(&service_write_ibuf, NULL, 0);
     
-    service_send(&service_write_ibuf, EXEC_NETSTART, args);
-    int32_t result = service_pop(&service_write_ibuf, NULL, 0);
+    service_send(&service_exec_ibuf, EXEC_NETSTART, args);
+    int32_t result = service_pop(&service_exec_ibuf, NULL, 0);
     if(result != EXEC_RESPONSE_OK) {
         fprintf(sock, "error\n");
     }
