@@ -105,6 +105,56 @@ void drop_permissions(void) {
     pledge("stdio unix tmppath rpath", NULL);
 }
 
+int ifstated(const char* ifaces_orig) {
+    int status = 0;
+    FILE* f = NULL;
+    char* ifaces = NULL;
+    char path[] = "/tmp/networkd.XXXXXXXX";
+    int fd = mkstemp(path);
+    if(fd < 0) { die("Failed to create temporary file"); }
+
+    int fdd = dup(fd);
+    if(fdd < 0) {
+        status = 1;
+        goto CLEANUP;
+    }
+    f = fdopen(fdd, "w");
+    if(f == NULL) {
+        status = 1;
+        goto CLEANUP;
+    }
+
+    ifaces = strdup(ifaces_orig);
+    if(ifaces == NULL) {
+        status = 1;
+        goto CLEANUP;
+    }
+    char* ifacesp = ifaces;
+    char* cursor;
+
+    fputs("state initial {\n", f);
+    while((cursor = strsep(&ifacesp, " ")) != NULL) {
+        fprintf(f, "if %s.link.up\n", cursor);
+        fprintf(f, "  run \"/usr/libexec/loghwevent up %s\"\n", cursor);
+        fprintf(f, "if ! %s.link.up\n", cursor);
+        fprintf(f, "  run \"/usr/libexec/loghwevent down %s\"\n", cursor);
+    }
+    fputs("}\n", f);
+
+    service_send(&service_exec_ibuf, EXEC_IFSTATED, path);
+    int32_t result = service_pop(&service_exec_ibuf, NULL, 0);
+    if(result != EXEC_RESPONSE_OK) {
+        status = 1;
+        goto CLEANUP;
+    }
+
+CLEANUP:
+    unlink(path);
+    if(ifaces != NULL) { free(ifaces); }
+    if(f != NULL) { fclose(f); }
+    return status;
+}
+
 void handle_list(FILE* sock, const char* args) {
     char pseudo_classes[PSEUDO_CLASSES_LEN];
     if(list_pseudo_classes(pseudo_classes, sizeof(pseudo_classes))) {
@@ -121,7 +171,6 @@ void handle_list(FILE* sock, const char* args) {
         free(output_text);
         return;
     }
-
 
     char* cursor;
     char iface[IFACE_LEN];

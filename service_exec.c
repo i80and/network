@@ -1,3 +1,5 @@
+#include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,9 +12,13 @@
 #include "validate.h"
 #include "util.h"
 
-static int run(char* const commands[], char* buf) {
-    if(buf == NULL) { die("Got null buffer"); }
+static int run(char* const[], pid_t* pid, bool);
+static int run_and_read(char* const[], char*);
+static enum exec_type ifstated(char* const);
+
+static int run(char* const commands[], pid_t* pid, bool include_stderr) {
     if(commands == NULL) { return 0; }
+    if(pid == NULL) { die("Given NULL pid"); }
 
     int fds[2];
     if(pipe(fds)) {
@@ -25,8 +31,11 @@ static int run(char* const commands[], char* buf) {
     posix_spawn_file_actions_adddup2(&action, fds[1], 1);
     posix_spawn_file_actions_addclose(&action, fds[1]);
 
-    pid_t pid;
-    int status = posix_spawn(&pid, commands[0],
+    if(include_stderr) {
+        posix_spawn_file_actions_adddup2(&action, 1, 2);
+    }
+
+    int status = posix_spawn(pid, commands[0],
                              &action,
                              NULL,
                              commands,
@@ -36,9 +45,18 @@ static int run(char* const commands[], char* buf) {
     }
     close(fds[1]);
 
-    FILE* f = fdopen(fds[0], "r");
+    return fds[0];
+}
+
+static int run_and_read(char* const commands[], char* buf) {
+    if(buf == NULL) { die("Got null buffer"); }
+    pid_t pid;
+    int status;
+
+    int fd = run(commands, &pid, false);
+    FILE* f = fdopen(fd, "r");
     if(f == NULL) {
-        close(fds[0]);
+        close(fd);
         waitpid(pid, NULL, 0);
         die("Failed to open read pipe");
     }
@@ -50,6 +68,51 @@ static int run(char* const commands[], char* buf) {
     fclose(f);
     waitpid(pid, &status, 0);
     return status;
+}
+
+static enum exec_type ifstated(char* const path) {
+    static pid_t pid = -1;
+    if(pid > 0) {
+        // Kill our original instance
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+    }
+
+    char* const commands[] = {"/usr/sbin/ifstated", "-d", "-f", path, NULL};
+    int fd = run(commands, &pid, true);
+    FILE* f = fdopen(fd, "r");
+    if(f == NULL) {
+        waitpid(pid, NULL, 0);
+        die("Failed to open read pipe");
+    }
+
+    char line[100];
+    while(fgets(line, sizeof(line), f) != NULL) {
+        if(strcmp(line, "started\n") == 0) {
+            break;
+        }
+    }
+
+    if(feof(f) || ferror(f)) {
+        // Premature exit
+        fclose(f);
+        close(fd);
+        waitpid(pid, NULL, 0);
+        return EXEC_RESPONSE_ERROR;
+    }
+
+    fclose(f);
+
+    // Redirect fd to /dev/null
+    int devnull = open("/dev/null", O_RDONLY);
+    if(devnull < 0) {
+        die("Error opening /dev/null");
+    }
+    if(dup2(fd, devnull) < 0) {
+        die("Error redirecting to /dev/null");
+    }
+
+    return EXEC_RESPONSE_OK;
 }
 
 static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const msg) {
@@ -65,12 +128,12 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
     switch(program) {
         case EXEC_IFCONFIG_LIST_INTERFACES: {
             char* const args[] = {"/sbin/ifconfig", NULL};
-            if(run(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
+            if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
         case EXEC_IFCONFIG_LIST_PSEUDO_INTERFACES: {
             char* const args[] = {"/sbin/ifconfig", "-C", NULL};
-            if(run(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
+            if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
         case EXEC_IFCONFIG_DOWN: {
@@ -80,7 +143,7 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
             }
 
             char* const args[] = {"/sbin/ifconfig", msg, "down", NULL};
-            if(run(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
+            if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
         case EXEC_NETSTART: {
@@ -90,7 +153,11 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
             }
 
             char* const args[] = {"/bin/sh", "/etc/netstart", msg, NULL};
-            if(run(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
+            if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
+            break;
+        }
+        case EXEC_IFSTATED: {
+            status = ifstated(msg);
             break;
         }
         default:
