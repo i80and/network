@@ -81,6 +81,17 @@ int32_t service_pop(struct imsgbuf* ibuf, char* buf, size_t buf_len) {
     return type;
 }
 
+int list_pseudo_classes(char* buf, size_t buf_len) {
+    buf[0] = '\0';
+    service_send(&service_exec_ibuf, EXEC_IFCONFIG_LIST_PSEUDO_INTERFACES, NULL);
+    int32_t result = service_pop(&service_exec_ibuf, buf, buf_len);
+    if(result != EXEC_RESPONSE_OK) {
+        return 1;
+    }
+
+    return 0;
+}
+
 void drop_permissions(void) {
     struct passwd* passwd = getpwnam("daemon");
     if(passwd == NULL) { die("Failed to get user information"); }
@@ -95,6 +106,11 @@ void drop_permissions(void) {
 }
 
 void handle_list(FILE* sock, const char* args) {
+    char pseudo_classes[PSEUDO_CLASSES_LEN];
+    if(list_pseudo_classes(pseudo_classes, sizeof(pseudo_classes))) {
+        die("Failed to enumerate pseudo classes");
+    }
+
     char* output_text = malloc(1024 * 1024);
     if(output_text == NULL) { die("Allocating output buffer failed"); }
 
@@ -106,20 +122,27 @@ void handle_list(FILE* sock, const char* args) {
         return;
     }
 
+
     char* cursor;
     char iface[IFACE_LEN];
+    bool skipping = false;
     while((cursor = strsep(&output_text, "\n")) != NULL) {
         char key[IFCONFIG_KEY_LEN];
         char flags[FLAGS_LEN];
         int mtu;
         if(parse_ifconfig_header(cursor, iface, flags, &mtu)) {
+            if(iface_is_pseudo(iface, pseudo_classes)) {
+                skipping = true;
+                continue;
+            }
+
             // We don't need to escape flags because it cannot have whitespace
             fprintf(sock, "%s.flags %s ", iface, flags);
             fprintf(sock, "%s.mtu %d ", iface, mtu);
             continue;
         }
 
-        if(parse_ifconfig_kv(cursor, key, flags)) {
+        if(!skipping && parse_ifconfig_kv(cursor, key, flags)) {
             char escaped[FLAGS_LEN];
             escape(flags, escaped, sizeof(escaped));
             fprintf(sock, "%s.%s %s ", iface, key, escaped);

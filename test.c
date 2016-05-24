@@ -118,6 +118,18 @@ static void test_parse_ifconfig_kv(void) {
     assert("", !parse_ifconfig_kv("inet 192.168.1.2", NULL, NULL));
 }
 
+static void test_iface_is_pseudo(void) {
+    test();
+
+    char pseudo[200];
+    strlcpy(pseudo, "bridge carp enc", sizeof(pseudo));
+
+    assert("", !iface_is_pseudo("em0", pseudo));
+    assert("", !iface_is_pseudo("em", pseudo));
+    assert("", iface_is_pseudo("enc0", pseudo));
+    assert("", iface_is_pseudo("bridge", pseudo));
+}
+
 static void run_tests(void) {
     test_chomp();
 
@@ -133,6 +145,7 @@ static void run_tests(void) {
     test_validate_stanza();
 
     test_parse_ifconfig_kv();
+    test_iface_is_pseudo();
 
     tests_passed += 1;
 }

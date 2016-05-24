@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <regex.h>
@@ -101,4 +102,28 @@ bool parse_ifconfig_kv(const char* text,
     extract_match(text, &matches[2], value, IFCONFIG_VALUE_LEN);
 
     return true;
+}
+
+bool iface_is_pseudo(const char* iface, const char* orig_pseudo_classes) {
+    char iface_class[IFACE_LEN] = {0};
+    char classes[PSEUDO_CLASSES_LEN];
+    char* classesp = classes;
+    char* cursor;
+
+    strlcpy(classes, orig_pseudo_classes, sizeof(classes));
+
+    for(size_t i = 0; iface[i] != '\0'; i += 1) {
+        if(i >= sizeof(iface_class)) { die("Interface overflow"); }
+        if(islower(iface[i])) {
+            iface_class[i] = iface[i];
+        } else { break; }
+    }
+
+    while((cursor = strsep(&classesp, " ")) != NULL) {
+        if(strcmp(iface_class, cursor) == 0) {
+            return true;
+        }
+    }
+
+    return false;
 }
