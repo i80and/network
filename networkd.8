@@ -1,0 +1,87 @@
+.Dd $Mdocdate: May 24 2016 $
+.Dt NETWORKD 8
+.Os
+.Sh NAME
+.Nm networkd
+.Nd network management daemon
+.Sh SYNOPSIS
+.Nm networkd
+.Op Fl s Ar path
+.Op Fl u Ar username
+.Sh DESCRIPTION
+The
+.Nm
+daemon responds to command lines sent on its control socket, located at
+.Pa /var/run/networkd.sock
+by default. It allows non-root users to configure network interfaces in
+simple ways, and logs network interface readiness events into the hardware
+event log at
+.Pa /var/run/hwevents .
+.Sh HARDWARE EVENT LOG
+Whenever a network interface's link state changes,
+.Nm networkd
+will log either of the following lines to
+.Pa /var/run/hwevents :
+.Bd -literal -offset indent
+up <interface>
+down <interface>
+.Ed
+.Sh PROTOCOL
+.Nm networkd
+speaks a line-oriented text protocol on its control socket. Newline
+characters, spaces, and backslashes are escaped with backslashes.
+
+For example, the JSON list '["a tall\\ntail", "the en\\\\d"]'
+would be represented as 'a\\ tall\\ntail the\\ en\\\\d'.
+
+Any of the following commands are accepted:
+.Bl -tag -width Ds -offset indent -compact
+.It \[bu]
+.Nm list
+.It \[bu]
+.Nm configure
+.Ar <interface> <stanza>...
+.It \[bu]
+.Nm connect
+.Ar <interface>
+.It \[bu]
+.Nm disconnect
+.Ar <interface>
+.El
+
+Configuration stanzas consist of limited
+.Xr hostname.if 5
+syntax, only allowing the
+.Pa inet ,
+.Pa inet6 ,
+.Pa dhcp ,
+.Pa rtsol ,
+.Pa nwid ,
+.Pa wpakey ,
+and
+.Pa dest
+stanzas.
+
+For example, the following is a legal message:
+
+.Bd -literal -offset indent
+configure em0 nwid my\\ ssid dhcp
+.Ed
+
+.Sh FILES
+.Bl -tag -width "/var/run/networkd.sock" -compact
+.It Pa /var/run/networkd.sock
+Default communication socket path.
+.It Pa /var/run/hwevents
+Hardware and network interface event log.
+.El
+.Ed
+.Sh SEE ALSO
+.Xr ifconfig 8
+.Xr hostname.if 5
+.Xr myname 5
+.Sh AUTHORS
+The
+.Nm
+program was written by
+.An Andrew Aldridge Aq Mt i80and@foxquill.com .
