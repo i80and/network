@@ -1,4 +1,6 @@
-CFLAGS:=-std=c99 -Wall -Wextra -Wshadow -Wno-unused-parameter -O2 -fstack-protector-all -g
+DEBUG:=
+CFLAGS:=-std=c99 -Wall -Wextra -Wshadow -Wno-unused-parameter -O2 -fstack-protector-all $(DEBUG)
+
 
 .PHONY: clean lint test
 

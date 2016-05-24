@@ -23,6 +23,8 @@
 
 #define SOCKET_PATH "/var/run/network.sock"
 
+void handle_list(FILE*, bool);
+
 void sighandler(int signo) {
     write(2, "Received signal\n", 16);
     cleanup();
@@ -105,10 +107,33 @@ void drop_permissions(void) {
     pledge("stdio unix tmppath rpath", NULL);
 }
 
-int ifstated(const char* ifaces_orig) {
+int ifstated(void) {
+    char ifaces[1024];
+    {
+        int pipefds[2];
+        FILE* reader;
+        FILE* writer;
+
+        if(pipe(pipefds) < 0) { die("Failed to open pipe"); }
+        if((reader = fdopen(pipefds[0], "r")) == NULL) {
+            close(pipefds[0]);
+            return 1;
+        }
+        if((writer = fdopen(pipefds[1], "w")) == NULL) {
+            fclose(reader);
+            close(pipefds[1]);
+            return 1;
+        }
+        handle_list(writer, false);
+        fclose(writer);
+        const ssize_t n_read = fread(ifaces, 1, sizeof(ifaces), reader);
+        if(n_read < 0) { die("Failed to read from list"); }
+        ifaces[n_read-1] = '\0';
+        fclose(reader);
+    }
+
     int status = 0;
     FILE* f = NULL;
-    char* ifaces = NULL;
     char path[] = "/tmp/networkd.XXXXXXXX";
     int fd = mkstemp(path);
     if(fd < 0) { die("Failed to create temporary file"); }
@@ -124,11 +149,6 @@ int ifstated(const char* ifaces_orig) {
         goto CLEANUP;
     }
 
-    ifaces = strdup(ifaces_orig);
-    if(ifaces == NULL) {
-        status = 1;
-        goto CLEANUP;
-    }
     char* ifacesp = ifaces;
     char* cursor;
 
@@ -150,12 +170,14 @@ int ifstated(const char* ifaces_orig) {
 
 CLEANUP:
     unlink(path);
-    if(ifaces != NULL) { free(ifaces); }
     if(f != NULL) { fclose(f); }
+    if(status != 0) {
+        warn("Error starting ifstated");
+    }
     return status;
 }
 
-void handle_list(FILE* sock, const char* args) {
+void handle_list(FILE* sock, bool details) {
     char pseudo_classes[PSEUDO_CLASSES_LEN];
     if(list_pseudo_classes(pseudo_classes, sizeof(pseudo_classes))) {
         die("Failed to enumerate pseudo classes");
@@ -164,7 +186,7 @@ void handle_list(FILE* sock, const char* args) {
     char* output_text = malloc(1024 * 1024);
     if(output_text == NULL) { die("Allocating output buffer failed"); }
 
-    service_send(&service_exec_ibuf, EXEC_IFCONFIG_LIST_INTERFACES, args);
+    service_send(&service_exec_ibuf, EXEC_IFCONFIG_LIST_INTERFACES, NULL);
     int32_t result = service_pop(&service_exec_ibuf, output_text, 1024 * 1024);
     if(result != EXEC_RESPONSE_OK) {
         fprintf(sock, "error\n");
@@ -172,6 +194,7 @@ void handle_list(FILE* sock, const char* args) {
         return;
     }
 
+    char const* space = "";
     char* cursor;
     char iface[IFACE_LEN];
     bool skipping = false;
@@ -184,19 +207,25 @@ void handle_list(FILE* sock, const char* args) {
                 skipping = true;
                 continue;
             } else {
+                if(!details) {
+                    fprintf(sock, "%s%s", space, iface);
+                    space = " ";
+                    continue;
+                }
                 skipping = false;
             }
 
             // We don't need to escape flags because it cannot have whitespace
-            fprintf(sock, "%s.flags %s ", iface, flags);
-            fprintf(sock, "%s.mtu %d ", iface, mtu);
+            fprintf(sock, "%s%s.flags %s", space, iface, flags);
+            fprintf(sock, " %s.mtu %d", iface, mtu);
+            space = " ";
             continue;
         }
 
-        if(!skipping && parse_ifconfig_kv(cursor, key, flags)) {
+        if(!skipping && details && parse_ifconfig_kv(cursor, key, flags)) {
             char escaped[FLAGS_LEN];
             escape(flags, escaped, sizeof(escaped));
-            fprintf(sock, "%s.%s %s ", iface, key, escaped);
+            fprintf(sock, " %s.%s %s", iface, key, escaped);
         }
     }
 
@@ -256,7 +285,7 @@ void handle(int fd) {
             char command[20];
             char const* remainder = unescape(chomp(buf), command, sizeof(command));
             if(strcmp(command, "list") == 0) {
-                handle_list(f, remainder);
+                handle_list(f, true);
             } else if(strcmp(command, "configure") == 0) {
                 handle_configure(f, remainder);
             } else if(strcmp(command, "connect") == 0) {
@@ -270,6 +299,36 @@ void handle(int fd) {
             fclose(f);
         }
     }
+}
+
+void handle_hwevents(int fd) {
+    int fdd = dup(fd);
+    if(fdd < 0) {
+        warn("Failed to duplicate hwevents fd");
+        return;
+    }
+
+    FILE* f = fdopen(fdd, "r");
+    if(f == NULL) {
+        warn("Failed to open hwevents fd");
+        close(fdd);
+    }
+
+    char line[100];
+    while(fgets(line, sizeof(line), f) != NULL) {
+        if(strncmp(line, "attach ", 7) != 0 &&
+           strncmp(line, "detach ", 7) != 0) {
+            continue;
+        }
+
+        if(atoi(strstr(line, " ")) == 3) {
+            // Network device changed
+            ifstated();
+            break;
+        }
+    }
+
+    fclose(f);
 }
 
 void serve(void) {
@@ -308,12 +367,23 @@ void serve(void) {
         die("Error listening");
     }
 
+    int hweventfd = open("/var/run/hwevents", O_RDONLY|O_NONBLOCK);
+    if(hweventfd < 0) { die("Error opening /var/run/hwevents"); }
+    if(lseek(hweventfd, 0, SEEK_END) < 0) {
+        die("Error seeking to end of hwevents log");
+    }
+
     const int kq = kqueue();
     if(kq == -1) { die("Failed to create kqueue"); }
 
     struct kevent event_set[10];
     struct kevent watch;
     EV_SET(&watch, sockfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    if(kevent(kq, &watch, 1, NULL, 0, NULL) == -1) {
+        die("Failed to add kevent watch");
+    }
+
+    EV_SET(&watch, hweventfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
     if(kevent(kq, &watch, 1, NULL, 0, NULL) == -1) {
         die("Failed to add kevent watch");
     }
@@ -331,6 +401,8 @@ void serve(void) {
                    die("Error removing connection from watch");
                }
                close(event->ident);
+            } else if((int)event->ident == hweventfd) {
+                handle_hwevents(hweventfd);
             } else if((int)event->ident == sockfd) {
                 int fd = accept(sockfd, (struct sockaddr*)&client_addr, &client_socklen);
                 if(fd == -1) { die("Error accepting connection"); }
@@ -350,6 +422,9 @@ void serve(void) {
 }
 
 int main(void) {
+    extern char *malloc_options;
+    malloc_options = "SC";
+
     spawn_service(&service_exec_ibuf, service_exec);
     spawn_service(&service_write_ibuf, service_write);
 
