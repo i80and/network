@@ -43,7 +43,7 @@ static enum write_type autoconfigure(const char* interface) {
 }
 
 static void dispatch(struct imsgbuf* ibuf, enum write_type type, const char* msg) {
-    char interface[IFACE_LEN];
+    char interface[IF_NAMESIZE];
     unescape(msg, interface, sizeof(interface));
     if(!validate_iface(interface)) {
         imsg_compose(ibuf, WRITE_RESPONSE_ERROR, 0, 0, -1, NULL, 0);

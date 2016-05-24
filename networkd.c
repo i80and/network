@@ -20,6 +20,7 @@
 #include "validate.h"
 #include "service_exec.h"
 #include "service_write.h"
+#include "ifstate.h"
 
 #define SOCKET_PATH "/var/run/network.sock"
 
@@ -55,7 +56,7 @@ void spawn_service(struct imsgbuf* ibuf, void(*f)(struct imsgbuf*)) {
 }
 
 void service_send(struct imsgbuf* ibuf, u_int32_t type, const char* msg) {
-    const size_t msg_len = (msg == NULL)? 0 : strlen(msg);
+    const size_t msg_len = (msg == NULL)? 0 : (strlen(msg) + 1);
     imsg_compose(ibuf, type, 0, 0, -1, msg, msg_len);
     imsg_flush(ibuf);
 }
@@ -104,77 +105,7 @@ void drop_permissions(void) {
     if(setgid(group->gr_gid) == -1) { die("Failed to set group"); }
     if(setuid(passwd->pw_uid) == -1) { die("Failed to set user"); }
 
-    pledge("stdio unix tmppath rpath", NULL);
-}
-
-int ifstated(void) {
-    char ifaces[1024];
-    {
-        int pipefds[2];
-        FILE* reader;
-        FILE* writer;
-
-        if(pipe(pipefds) < 0) { die("Failed to open pipe"); }
-        if((reader = fdopen(pipefds[0], "r")) == NULL) {
-            close(pipefds[0]);
-            return 1;
-        }
-        if((writer = fdopen(pipefds[1], "w")) == NULL) {
-            fclose(reader);
-            close(pipefds[1]);
-            return 1;
-        }
-        handle_list(writer, false);
-        fclose(writer);
-        const ssize_t n_read = fread(ifaces, 1, sizeof(ifaces), reader);
-        if(n_read < 0) { die("Failed to read from list"); }
-        ifaces[n_read-1] = '\0';
-        fclose(reader);
-    }
-
-    int status = 0;
-    FILE* f = NULL;
-    char path[] = "/tmp/networkd.XXXXXXXX";
-    int fd = mkstemp(path);
-    if(fd < 0) { die("Failed to create temporary file"); }
-
-    int fdd = dup(fd);
-    if(fdd < 0) {
-        status = 1;
-        goto CLEANUP;
-    }
-    f = fdopen(fdd, "w");
-    if(f == NULL) {
-        status = 1;
-        goto CLEANUP;
-    }
-
-    char* ifacesp = ifaces;
-    char* cursor;
-
-    fputs("state initial {\n", f);
-    while((cursor = strsep(&ifacesp, " ")) != NULL) {
-        fprintf(f, "if %s.link.up\n", cursor);
-        fprintf(f, "  run \"/usr/libexec/loghwevent up %s\"\n", cursor);
-        fprintf(f, "if ! %s.link.up\n", cursor);
-        fprintf(f, "  run \"/usr/libexec/loghwevent down %s\"\n", cursor);
-    }
-    fputs("}\n", f);
-
-    service_send(&service_exec_ibuf, EXEC_IFSTATED, path);
-    int32_t result = service_pop(&service_exec_ibuf, NULL, 0);
-    if(result != EXEC_RESPONSE_OK) {
-        status = 1;
-        goto CLEANUP;
-    }
-
-CLEANUP:
-    unlink(path);
-    if(f != NULL) { fclose(f); }
-    if(status != 0) {
-        warn("Error starting ifstated");
-    }
-    return status;
+    //pledge("stdio unix tmppath rpath", NULL);
 }
 
 void handle_list(FILE* sock, bool details) {
@@ -196,7 +127,7 @@ void handle_list(FILE* sock, bool details) {
 
     char const* space = "";
     char* cursor;
-    char iface[IFACE_LEN];
+    char iface[IF_NAMESIZE];
     bool skipping = false;
     while((cursor = strsep(&output_text, "\n")) != NULL) {
         char key[IFCONFIG_KEY_LEN];
@@ -258,7 +189,7 @@ void handle_connect(FILE* sock, const char* args) {
 }
 
 void handle_disconnect(FILE* sock, const char* args) {
-    char iface[IFACE_LEN];
+    char iface[IF_NAMESIZE];
     strlcpy(iface, args, sizeof(iface));
 
     service_send(&service_write_ibuf, EXEC_IFCONFIG_DOWN, args);
@@ -301,34 +232,30 @@ void handle(int fd) {
     }
 }
 
-void handle_hwevents(int fd) {
-    int fdd = dup(fd);
-    if(fdd < 0) {
-        warn("Failed to duplicate hwevents fd");
+void handle_iface_change(int monitor) {
+    char buf[2048];
+    read(monitor, buf, sizeof(buf));
+    
+    struct rt_msghdr* rtm = (struct rt_msghdr*)&buf;
+    struct if_msghdr ifm;
+    memcpy(&ifm, rtm, sizeof(ifm));
+
+    char iface[IF_NAMESIZE];
+    if(if_indextoname(ifm.ifm_index, iface) == NULL) {
+        warn("Failed to look up iface by index");
         return;
     }
+    
+    bool up = LINK_STATE_IS_UP(ifm.ifm_data.ifi_link_state);
+    const char* term = up? "up" : "down";
 
-    FILE* f = fdopen(fdd, "r");
-    if(f == NULL) {
-        warn("Failed to open hwevents fd");
-        close(fdd);
+    snprintf(buf, sizeof(buf), "%s %s", term, iface);
+    service_send(&service_exec_ibuf, EXEC_LOGEVENT, buf);
+    int32_t result = service_pop(&service_exec_ibuf, NULL, 0);
+    if(result != EXEC_RESPONSE_OK) {
+        warn("Failed to log iface change");
+        return;
     }
-
-    char line[100];
-    while(fgets(line, sizeof(line), f) != NULL) {
-        if(strncmp(line, "attach ", 7) != 0 &&
-           strncmp(line, "detach ", 7) != 0) {
-            continue;
-        }
-
-        if(atoi(strstr(line, " ")) == 3) {
-            // Network device changed
-            ifstated();
-            break;
-        }
-    }
-
-    fclose(f);
 }
 
 void serve(void) {
@@ -339,7 +266,7 @@ void serve(void) {
     socklen_t client_socklen = sizeof(client_addr);
 
     struct sockaddr_un addr;
-    bzero(&addr, sizeof(addr));
+    memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
 
@@ -367,12 +294,6 @@ void serve(void) {
         die("Error listening");
     }
 
-    int hweventfd = open("/var/run/hwevents", O_RDONLY|O_NONBLOCK);
-    if(hweventfd < 0) { die("Error opening /var/run/hwevents"); }
-    if(lseek(hweventfd, 0, SEEK_END) < 0) {
-        die("Error seeking to end of hwevents log");
-    }
-
     const int kq = kqueue();
     if(kq == -1) { die("Failed to create kqueue"); }
 
@@ -383,10 +304,12 @@ void serve(void) {
         die("Failed to add kevent watch");
     }
 
-    EV_SET(&watch, hweventfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    int monitor = monitor_ifaces();
+    if(monitor < 0) { die("Failed to monitor ifaces"); }
+    EV_SET(&watch, monitor, EVFILT_READ, EV_ADD, 0, 0, NULL);
     if(kevent(kq, &watch, 1, NULL, 0, NULL) == -1) {
         die("Failed to add kevent watch");
-    }
+    }    
 
     printf("Listening\n");
     while(1) {
@@ -401,8 +324,8 @@ void serve(void) {
                    die("Error removing connection from watch");
                }
                close(event->ident);
-            } else if((int)event->ident == hweventfd) {
-                handle_hwevents(hweventfd);
+            } else if((int)event->ident == monitor) {
+                handle_iface_change(monitor);
             } else if((int)event->ident == sockfd) {
                 int fd = accept(sockfd, (struct sockaddr*)&client_addr, &client_socklen);
                 if(fd == -1) { die("Error accepting connection"); }
@@ -422,12 +345,15 @@ void serve(void) {
 }
 
 int main(void) {
+    // Harden our malloc flags
     extern char *malloc_options;
     malloc_options = "SC";
 
+    // Start child workers for privsep
     spawn_service(&service_exec_ibuf, service_exec);
     spawn_service(&service_write_ibuf, service_write);
 
+    // Main loop
     serve();
 
     return 0;

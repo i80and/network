@@ -49,7 +49,7 @@ bool validate_stanza(const char* text) {
 }
 
 bool parse_ifconfig_header(const char* text,
-                           char iface[IFACE_LEN],
+                           char iface[IF_NAMESIZE],
                            char flags[FLAGS_LEN],
                            int* mtu) {
     if(!ifconfig_header_pat_init) {
@@ -70,7 +70,7 @@ bool parse_ifconfig_header(const char* text,
 
     if(iface == NULL || flags == NULL || mtu == NULL) { return true; }
 
-    extract_match(text, &matches[1], iface, IFACE_LEN);
+    extract_match(text, &matches[1], iface, IF_NAMESIZE);
     extract_match(text, &matches[2], flags, FLAGS_LEN);
     *mtu = atoi(text + matches[3].rm_so);
 
@@ -105,7 +105,7 @@ bool parse_ifconfig_kv(const char* text,
 }
 
 bool iface_is_pseudo(const char* iface, const char* orig_pseudo_classes) {
-    char iface_class[IFACE_LEN] = {0};
+    char iface_class[IF_NAMESIZE] = {0};
     char classes[PSEUDO_CLASSES_LEN];
     char* classesp = classes;
     char* cursor;

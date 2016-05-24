@@ -14,10 +14,6 @@
 
 static int run(char* const[], pid_t* pid, bool);
 static int run_and_read(char* const[], char*);
-static void ifstated_shutdown(void);
-static enum exec_type ifstated(char* const);
-
-static pid_t ifstated_pid;
 
 static int run(char* const commands[], pid_t* pid, bool include_stderr) {
     if(commands == NULL) { return 0; }
@@ -64,63 +60,13 @@ static int run_and_read(char* const commands[], char* buf) {
         die("Failed to open read pipe");
     }
 
-    size_t n_read = fread(buf, 1, EXEC_BUF_LEN-1, f);
-    buf[n_read-1] = '\0';
+    ssize_t n_read = fread(buf, 1, EXEC_BUF_LEN-1, f);
+    buf[n_read] = '\0';
 
     // If we overflow the buffer, count on SIGPIPE to terminate the child.
     fclose(f);
     waitpid(pid, &status, 0);
     return status;
-}
-
-static void ifstated_shutdown(void) {
-    if(ifstated_pid > 0) {
-        // Kill our original instance
-        kill(ifstated_pid, SIGTERM);
-        waitpid(ifstated_pid, NULL, 0);
-
-        ifstated_pid = -1;
-    }
-}
-
-static enum exec_type ifstated(char* const path) {
-    ifstated_shutdown();
-
-    char* const commands[] = {"/usr/sbin/ifstated", "-d", "-f", path, NULL};
-    int fd = run(commands, &ifstated_pid, true);
-    FILE* f = fdopen(fd, "r");
-    if(f == NULL) {
-        waitpid(ifstated_pid, NULL, 0);
-        die("Failed to open read pipe");
-    }
-
-    char line[100];
-    while(fgets(line, sizeof(line), f) != NULL) {
-        if(strcmp(line, "started\n") == 0) {
-            break;
-        }
-    }
-
-    if(feof(f) || ferror(f)) {
-        // Premature exit
-        fclose(f);
-        close(fd);
-        waitpid(ifstated_pid, NULL, 0);
-        return EXEC_RESPONSE_ERROR;
-    }
-
-    fclose(f);
-
-    // Redirect fd to /dev/null
-    int devnull = open("/dev/null", O_RDONLY);
-    if(devnull < 0) {
-        die("Error opening /dev/null");
-    }
-    if(dup2(fd, devnull) < 0) {
-        die("Error redirecting to /dev/null");
-    }
-
-    return EXEC_RESPONSE_OK;
 }
 
 static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const msg) {
@@ -164,8 +110,9 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
             if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
-        case EXEC_IFSTATED: {
-            status = ifstated(msg);
+        case EXEC_LOGEVENT: {
+            char* const args[] = {"/usr/libexec/loghwevent", msg, NULL};
+            if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
         default:
@@ -194,8 +141,6 @@ void service_exec(struct imsgbuf* ibuf) {
             imsg_free(&imsg);
         }
     }
-
-    ifstated_shutdown();
 }
 
 struct imsgbuf service_exec_ibuf;
