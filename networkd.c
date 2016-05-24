@@ -22,8 +22,6 @@
 #include "service_exec.h"
 #include "service_write.h"
 
-#define SOCKET_PATH "/var/run/network.sock"
-
 void handle_list(FILE*, bool);
 
 void sighandler(int signo) {
@@ -106,10 +104,10 @@ int list_pseudo_classes(char* buf, size_t buf_len) {
     return 0;
 }
 
-void drop_permissions(void) {
-    struct passwd* passwd = getpwnam("daemon");
+void drop_permissions(const char* username) {
+    struct passwd* passwd = getpwnam(username);
     if(passwd == NULL) { die("Failed to get user information"); }
-    struct group* group = getgrnam("daemon");
+    struct group* group = getgrnam(username);
     if(group == NULL) { die("Failed to get group information"); }
 
     if(chroot("/var/empty") != 0) { die("Failed to chroot"); }
@@ -272,7 +270,7 @@ void handle_iface_change(int monitor) {
     }
 }
 
-void serve(void) {
+void serve(const char* sockpath, const char* username) {
     int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if(sockfd < 0) { die("Failed to create socket"); }
 
@@ -282,28 +280,28 @@ void serve(void) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
+    strncpy(addr.sun_path, sockpath, sizeof(addr.sun_path)-1);
 
-    unlink(SOCKET_PATH);
+    unlink(sockpath);
     if(bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
         die("Failed to bind to socket");
     }
 
-    if(chmod(SOCKET_PATH, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP) == -1) {
+    if(chmod(sockpath, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP) == -1) {
         die("Failed to set socket permissions");
     }
 
     struct group* group = getgrnam("network");
     if(group == NULL) { die("Failed to get network group information"); }
 
-    if(chown(SOCKET_PATH, 0, group->gr_gid) == -1) {
+    if(chown(sockpath, 0, group->gr_gid) == -1) {
         die("Failed to set socket ownership");
     }
 
     int monitor = monitor_ifaces();
     if(monitor < 0) { die("Failed to monitor ifaces"); }
 
-    drop_permissions();
+    drop_permissions(username);
     signal(SIGINT, sighandler);
     signal(SIGTERM, sighandler);
 
@@ -359,17 +357,50 @@ void serve(void) {
     }
 }
 
-int main(void) {
+void usage(void) {
+    printf("usage: networkd [-s <sockpath>] [-u <user>]\n");
+    exit(1);
+}
+
+int main(int argc, char** argv) {
     // Harden our malloc flags
     extern char *malloc_options;
     malloc_options = "SC";
+
+    char* sockpath = "/var/run/networkd.sock";
+    char* username = "_networkd";
+    char flag = '\0';
+    for(int i = 1; i < argc; i += 1) {
+        char* arg = argv[i];
+        if(flag == '\0') {
+            if(arg[0] != '-') { usage(); }
+            flag = arg[1];
+            continue;
+        }
+
+        switch(flag) {
+            case 's':
+                sockpath = arg;
+                break;
+            case 'u':
+                username = arg;
+                break;
+            default:
+                usage();
+                break;
+        }
+
+        flag = '\0';
+    }
+
+    if(flag != '\0') { usage(); }
 
     // Start child workers for privsep
     spawn_service(&service_exec_ibuf, service_exec);
     spawn_service(&service_write_ibuf, service_write);
 
     // Main loop
-    serve();
+    serve(sockpath, username);
 
     return 0;
 }
