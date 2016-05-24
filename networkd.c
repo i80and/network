@@ -134,6 +134,8 @@ void handle_list(FILE* sock, const char* args) {
             if(iface_is_pseudo(iface, pseudo_classes)) {
                 skipping = true;
                 continue;
+            } else {
+                skipping = false;
             }
 
             // We don't need to escape flags because it cannot have whitespace
