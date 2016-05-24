@@ -5,6 +5,8 @@
 #include "validate.h"
 #include "util.h"
 
+static void extract_match(const char*, const regmatch_t*, char*, size_t);
+
 static bool iface_pat_init;
 static regex_t iface_pat;
 
@@ -16,6 +18,14 @@ static regex_t ifconfig_header_pat;
 
 static bool ifconfig_kv_pat_init;
 static regex_t ifconfig_kv_pat;
+
+static void extract_match(const char* text,
+                          const regmatch_t* match,
+                          char* buf,
+                          size_t buf_len) {
+    const size_t value_len = min(buf_len, match->rm_eo - match->rm_so + 1);
+    strlcpy(buf, text + match->rm_so, value_len);
+}
 
 bool validate_iface(const char* text) {
     if(!iface_pat_init) {
@@ -59,12 +69,8 @@ bool parse_ifconfig_header(const char* text,
 
     if(iface == NULL || flags == NULL || mtu == NULL) { return true; }
 
-    const size_t iface_len = min(IFACE_LEN, matches[1].rm_eo - matches[1].rm_so);
-    strlcpy(iface, text + matches[1].rm_so, iface_len);
-
-    const size_t flags_len = min(FLAGS_LEN, matches[2].rm_eo - matches[2].rm_so);
-    strlcpy(flags, text + matches[2].rm_so, flags_len);
-
+    extract_match(text, &matches[1], iface, IFACE_LEN);
+    extract_match(text, &matches[2], flags, FLAGS_LEN);
     *mtu = atoi(text + matches[3].rm_so);
 
     return true;
@@ -91,11 +97,8 @@ bool parse_ifconfig_kv(const char* text,
 
     if(key == NULL || value == NULL) { return true; }
 
-    const size_t key_len = min(IFCONFIG_KEY_LEN, matches[1].rm_eo - matches[1].rm_so + 1);
-    strlcpy(key, text + matches[1].rm_so, key_len);
-
-    const size_t value_len = min(IFCONFIG_VALUE_LEN, matches[2].rm_eo - matches[2].rm_so + 1);
-    strlcpy(value, text + matches[2].rm_so, value_len);
+    extract_match(text, &matches[1], key, IFCONFIG_KEY_LEN);
+    extract_match(text, &matches[2], value, IFCONFIG_VALUE_LEN);
 
     return true;
 }
