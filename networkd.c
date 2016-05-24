@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <sys/event.h>
 #include <sys/stat.h>
+#include <net/route.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <imsg.h>
@@ -20,7 +21,6 @@
 #include "validate.h"
 #include "service_exec.h"
 #include "service_write.h"
-#include "ifstate.h"
 
 #define SOCKET_PATH "/var/run/network.sock"
 
@@ -30,6 +30,17 @@ void sighandler(int signo) {
     write(2, "Received signal\n", 16);
     cleanup();
     _exit(0);
+}
+
+static int monitor_ifaces(void) {
+    int rt_fd = socket(PF_ROUTE, SOCK_RAW, 0);
+    unsigned int rtfilter = ROUTE_FILTER(RTM_IFINFO);
+    setsockopt(rt_fd, PF_ROUTE, ROUTE_MSGFILTER, &rtfilter, sizeof(rtfilter));
+
+    rtfilter = RTABLE_ANY;
+    setsockopt(rt_fd, PF_ROUTE, ROUTE_TABLEFILTER, &rtfilter, sizeof(rtfilter));
+
+    return rt_fd;
 }
 
 void spawn_service(struct imsgbuf* ibuf, void(*f)(struct imsgbuf*)) {
@@ -105,7 +116,7 @@ void drop_permissions(void) {
     if(setgid(group->gr_gid) == -1) { die("Failed to set group"); }
     if(setuid(passwd->pw_uid) == -1) { die("Failed to set user"); }
 
-    //pledge("stdio unix tmppath rpath", NULL);
+    pledge("stdio unix", NULL);
 }
 
 void handle_list(FILE* sock, bool details) {
@@ -286,6 +297,9 @@ void serve(void) {
         die("Failed to set socket ownership");
     }
 
+    int monitor = monitor_ifaces();
+    if(monitor < 0) { die("Failed to monitor ifaces"); }
+
     drop_permissions();
     signal(SIGINT, sighandler);
     signal(SIGTERM, sighandler);
@@ -304,8 +318,6 @@ void serve(void) {
         die("Failed to add kevent watch");
     }
 
-    int monitor = monitor_ifaces();
-    if(monitor < 0) { die("Failed to monitor ifaces"); }
     EV_SET(&watch, monitor, EVFILT_READ, EV_ADD, 0, 0, NULL);
     if(kevent(kq, &watch, 1, NULL, 0, NULL) == -1) {
         die("Failed to add kevent watch");
