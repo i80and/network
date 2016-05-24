@@ -112,6 +112,9 @@ void drop_permissions(void) {
     struct group* group = getgrnam("daemon");
     if(group == NULL) { die("Failed to get group information"); }
 
+    if(chroot("/var/empty") != 0) { die("Failed to chroot"); }
+    if(chdir("/") != 0) { die("Failed to chdir"); }
+
     if(setgroups(0, NULL) == -1) { die("Failed to set supplementary groups"); }
     if(setgid(group->gr_gid) == -1) { die("Failed to set group"); }
     if(setuid(passwd->pw_uid) == -1) { die("Failed to set user"); }
