@@ -14,7 +14,10 @@
 
 static int run(char* const[], pid_t* pid, bool);
 static int run_and_read(char* const[], char*);
+static void ifstated_shutdown(void);
 static enum exec_type ifstated(char* const);
+
+static pid_t ifstated_pid;
 
 static int run(char* const commands[], pid_t* pid, bool include_stderr) {
     if(commands == NULL) { return 0; }
@@ -70,19 +73,24 @@ static int run_and_read(char* const commands[], char* buf) {
     return status;
 }
 
-static enum exec_type ifstated(char* const path) {
-    static pid_t pid = -1;
-    if(pid > 0) {
+static void ifstated_shutdown(void) {
+    if(ifstated_pid > 0) {
         // Kill our original instance
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
+        kill(ifstated_pid, SIGTERM);
+        waitpid(ifstated_pid, NULL, 0);
+
+        ifstated_pid = -1;
     }
+}
+
+static enum exec_type ifstated(char* const path) {
+    ifstated_shutdown();
 
     char* const commands[] = {"/usr/sbin/ifstated", "-d", "-f", path, NULL};
-    int fd = run(commands, &pid, true);
+    int fd = run(commands, &ifstated_pid, true);
     FILE* f = fdopen(fd, "r");
     if(f == NULL) {
-        waitpid(pid, NULL, 0);
+        waitpid(ifstated_pid, NULL, 0);
         die("Failed to open read pipe");
     }
 
@@ -97,7 +105,7 @@ static enum exec_type ifstated(char* const path) {
         // Premature exit
         fclose(f);
         close(fd);
-        waitpid(pid, NULL, 0);
+        waitpid(ifstated_pid, NULL, 0);
         return EXEC_RESPONSE_ERROR;
     }
 
@@ -175,7 +183,7 @@ void service_exec(struct imsgbuf* ibuf) {
     while(1) {
         int n = imsg_read(ibuf);
         if(n < 0) { die("Error reading ibuf"); }
-        if(n == 0) { return; }
+        if(n == 0) { break; }
 
         while(1) {
             struct imsg imsg;
@@ -186,6 +194,8 @@ void service_exec(struct imsgbuf* ibuf) {
             imsg_free(&imsg);
         }
     }
+
+    ifstated_shutdown();
 }
 
 struct imsgbuf service_exec_ibuf;
