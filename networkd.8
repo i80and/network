@@ -28,11 +28,10 @@ down <interface>
 .Ed
 .Sh PROTOCOL
 .Nm networkd
-speaks a line-oriented text protocol on its control socket. Newline
-characters, spaces, and backslashes are escaped with backslashes.
-
-For example, the JSON list '["a tall\\ntail", "the en\\\\d"]'
-would be represented as 'a\\ tall\\ntail the\\ en\\\\d'.
+speaks a line-oriented JSON protocol on its control socket. Each line
+contains a JSON array, starting with a command, followed by arguments.
+.Nm networkd
+will respond with a JSON array starting with either "ok" or "error".
 
 Any of the following commands are accepted:
 .Bl -tag -width Ds -offset indent -compact
@@ -65,7 +64,7 @@ stanzas.
 For example, the following is a legal message:
 
 .Bd -literal -offset indent
-configure em0 nwid my\\ ssid dhcp
+["configure", "em0", "nwid homenetwork dhcp"]
 .Ed
 
 .Sh FILES

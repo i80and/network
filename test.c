@@ -2,8 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "parse.h"
+#include "flatjson.h"
 #include "validate.h"
+#include "util.h"
 
 int tests_passed = -1;
 static void __assert(const char* msg, const char* func, int line) {
@@ -27,66 +28,55 @@ static void test_unescape_simple(void) {
     test();
 
     char buf[100];
-    char const* result = unescape("foo bar", buf, sizeof(buf));
+    char const* result = flatjson_next("[\"foo bar\", \"bar\"]", buf, sizeof(buf), NULL);
     assert("", result != NULL);
-    assert("", strcmp("foo", buf) == 0);
+    assert("", strcmp("foo bar", buf) == 0);
 
-    result = unescape(result, buf, sizeof(buf));
-    assert("", result == NULL);
+    result = flatjson_next(result, buf, sizeof(buf), NULL);
     assert("", strcmp("bar", buf) == 0);
+
+    result = flatjson_next(result, buf, sizeof(buf), NULL);
+    assert("", strcmp("", buf) == 0);
+    assert("", result == NULL);
 }
 
 static void test_unescape_overflow(void) {
     test();
 
     char buf[5];
-    char const* result = unescape("kitt", buf, sizeof(buf));
-    assert("", result == NULL);
+    enum flatjson status;
+    flatjson_next("\"kitt\"", buf, sizeof(buf), &status);
     assert("", strcmp("kitt", buf) == 0);
+    assert("", status == FLATJSON_OK);
 
-    result = unescape("kitty", buf, sizeof(buf));
-    assert("", result == NULL);
+    flatjson_next("\"kitty\"", buf, sizeof(buf), &status);
     assert("", strcmp("kitt", buf) == 0);
+    assert("", status == FLATJSON_ERROR_OVERFLOW);
 }
 
 static void test_unescape_escapes(void) {
     test();
 
     char buf[100];
-    char const* result = unescape("f\\no\\\\o\\ bar", buf, sizeof(buf));
-    assert("", result == NULL);
+    enum flatjson status;
+    flatjson_next("\"f\\no\\\\o bar\"", buf, sizeof(buf), &status);
+    assert("", status == FLATJSON_OK);
     assert("", strcmp("f\no\\o bar", buf) == 0);
-}
-
-static void test_unescape_null(void) {
-    test();
-
-    char buf[10];
-    buf[0] = 'a';
-    char const* result = unescape(NULL, buf, sizeof(buf));
-    assert("", result == NULL);
-    assert("", buf[0] == '\0');
-    
-    result = unescape(NULL, NULL, 0);
-    assert("", result == NULL);
-
-    result = unescape("foo bar", NULL, 0);
-    assert("", result == NULL);
 }
 
 static void test_escape_simple(void) {
     test();
 
     char buf[100];
-    assert("", escape("foo ba\nr", buf, sizeof(buf)) != NULL);
-    assert("", strcmp("foo\\ ba\\nr", buf) == 0);
+    assert("", flatjson_escape("f\"oo ba\nr", buf, sizeof(buf)) == 0);
+    assert("", strcmp("f\\\"oo ba\\nr", buf) == 0);
 }
 
 static void test_escape_overflow(void) {
     test();
 
     char buf[5];
-    assert("", escape("foob", buf, sizeof(buf)) == NULL);
+    assert("", flatjson_escape("foob", buf, sizeof(buf)) != 0);
 }
 
 static void test_validate_iface(void) {
@@ -136,7 +126,6 @@ static void run_tests(void) {
     test_unescape_simple();
     test_unescape_overflow();
     test_unescape_escapes();
-    test_unescape_null();
 
     test_escape_simple();
     test_escape_overflow();

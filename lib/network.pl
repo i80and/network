@@ -5,20 +5,19 @@ use warnings;
 use Pod::Usage;
 use Getopt::Long;
 use Carp;
-use Unix::Pledge;
+use JSON::PP;
 use IO::Socket::UNIX;
 
-local $ENV{'PATH'} = '/bin:/sbin:/usr/bin:/usr/sbin';
-my $SOCK_PATH = "/var/run/network.sock";
+my $SOCK_PATH = "/var/run/networkd.sock";
 
 sub send_message {
-    my ($socket, $command) = @_;
-    $socket->send("$command\n");
-    my $response = <$socket>;
-    if(!defined $response) { $response = ''; }
-    chomp $response;
+    my ($socket, @command) = @_;
+    my $encoded = encode_json \@command;
+    $socket->send("$encoded\n");
+    my $raw_response = <$socket>;
+    if(!defined $raw_response) { $raw_response = ''; }
 
-    my @parts = $response =~ /^(ok|error)(?: (.*))?/;
+    my @parts = @{decode_json $raw_response};
     if($#parts < 0) { die "Bad response\n"; }
     if($parts[0] ne 'ok') {
         if($#parts >= 1) {
@@ -27,26 +26,45 @@ sub send_message {
         die "Failed\n";
     }
 
-    return $parts[1];
+    return @parts[1..$#parts];
 }
 
-sub prompt {
-    my ($socket) = @_;
-
-    while(1) {
-        print "> ";
-        my $command = <>;
-        if(!defined $command) { last; }
-        chomp $command;
-
-        my $response = send_message($socket, $command);
-        if(defined $response) {
-            print "$response\n";
-        }
+sub handle_list {
+    my ($sock, @args) = @_;
+    my %response = send_message($sock, ['list']);
+    my @keys = sort(keys %response);
+    foreach my $key(@keys) {
+        my $value = $response{$key};
+        printf("%-20s%s\n", $key, $value);
     }
 
     return;
 }
+
+sub handle_connect {
+    my ($sock, @args) = @_;
+    if($#args != 0) { pod2usage(1); }
+
+    my @response = send_message($sock, ['connect', $args[0]]);
+    return;
+
+}
+
+sub handle_disconnect {
+    my ($sock, @args) = @_;
+    if($#args != 0) { pod2usage(1); }
+
+    my @response = send_message($sock, ['disconnect', $args[0]]);
+    return;
+}
+
+sub handle_configure { return; }
+
+my %DISPATCH = ();
+$DISPATCH{'list'} = \&handle_list;
+$DISPATCH{'connect'} = \&handle_connect;
+$DISPATCH{'disconnect'} = \&handle_disconnect;
+$DISPATCH{'configure'} = \&handle_configure;
 
 sub main {
     my $socket = IO::Socket::UNIX->new(
@@ -54,22 +72,18 @@ sub main {
         Peer => $SOCK_PATH,
     ) or die "Failed to connect to networkd: $!\n";
 
-    pledge('stdio unix rpath');
-
     my $help = 0;
-    my $prompt = 0;
-    GetOptions('prompt' => \$prompt, 'help|?' => \$help) or pod2usage(2);
+    GetOptions('help|?' => \$help) or pod2usage(2);
     pod2usage(1) if $help;
 
-    if($prompt) {
-        prompt($socket);
-        return;
-    }
-
     if($#ARGV >= 0) {
-        my $command = join(' ', @ARGV);
-        my $response = send_message($socket, $command);
-        print "$response\n" if defined $response;
+        my $handler = $DISPATCH{$ARGV[0]};
+        if(!defined $handler) {
+            die "Unknown method: $ARGV[0]\n";
+        }
+
+        $handler->($socket, @ARGV[1..$#ARGV]);
+
         return;
     }
 
@@ -90,6 +104,8 @@ network - Network management client
 network list
 
 network (connect | disconnect) <interface>
+
+network configure <interface> <stanza>...
 
 network --prompt
 

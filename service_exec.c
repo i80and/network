@@ -7,8 +7,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 
+#include "flatjson.h"
 #include "service_exec.h"
-#include "parse.h"
 #include "validate.h"
 #include "util.h"
 
@@ -69,15 +69,18 @@ static int run_and_read(char* const commands[], char* buf) {
     return status;
 }
 
-static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const msg) {
+static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* msg) {
     int32_t status = EXEC_RESPONSE_OK;
+    char iface[IF_NAMESIZE] = {0};
     static char* buf = NULL;
     if(buf == NULL) { buf = malloc(EXEC_BUF_LEN); }
     if(buf == NULL) { die("Failed to allocate buffer"); }
     buf[0] = '\0';
 
-    // Check if we were provided an interface to operate on
-    bool have_iface = (msg != NULL) && validate_iface(msg);
+    // Check if we were provided an interface on which to operate
+    bool have_iface = (msg != NULL) &&
+                      (msg = (char*)flatjson_next(msg, iface, sizeof(iface), NULL)) != NULL &&
+                      validate_iface(iface);
 
     switch(program) {
         case EXEC_IFCONFIG_LIST_INTERFACES: {
@@ -96,7 +99,7 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
                 break;
             }
 
-            char* const args[] = {"/sbin/ifconfig", msg, "down", NULL};
+            char* const args[] = {"/sbin/ifconfig", iface, "down", NULL};
             if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }
@@ -106,7 +109,7 @@ static void dispatch(struct imsgbuf* ibuf, enum exec_type program, char* const m
                 break;
             }
 
-            char* const args[] = {"/bin/sh", "/etc/netstart", msg, NULL};
+            char* const args[] = {"/bin/sh", "/etc/netstart", iface, NULL};
             if(run_and_read(args, buf) > 0) { status = EXEC_RESPONSE_ERROR; }
             break;
         }

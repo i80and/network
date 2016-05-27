@@ -16,7 +16,7 @@
 #include <fcntl.h>
 #include <imsg.h>
 
-#include "parse.h"
+#include "flatjson.h"
 #include "util.h"
 #include "validate.h"
 #include "service_exec.h"
@@ -132,16 +132,21 @@ void handle_list(FILE* sock, bool details) {
     service_send(&service_exec_ibuf, EXEC_IFCONFIG_LIST_INTERFACES, NULL);
     int32_t result = service_pop(&service_exec_ibuf, output_text, 1024 * 1024);
     if(result != EXEC_RESPONSE_OK) {
-        fprintf(sock, "error\n");
+        flatjson_send_singleton(sock, "error");
+        fputs("\n", sock);
         free(output_text);
         return;
     }
 
-    char const* space = "";
+    bool first_message = true;
+    flatjson_start_send(sock);
+    flatjson_send(sock, "ok", &first_message);
+
     char* cursor;
     char iface[IF_NAMESIZE];
     bool skipping = false;
     while((cursor = strsep(&output_text, "\n")) != NULL) {
+        char rendered[IF_NAMESIZE + 10];
         char key[IFCONFIG_KEY_LEN];
         char flags[FLAGS_LEN];
         int mtu;
@@ -151,27 +156,30 @@ void handle_list(FILE* sock, bool details) {
                 continue;
             } else {
                 if(!details) {
-                    fprintf(sock, "%s%s", space, iface);
-                    space = " ";
+                    flatjson_send(sock, iface, &first_message);
                     continue;
                 }
                 skipping = false;
             }
 
-            // We don't need to escape flags because it cannot have whitespace
-            fprintf(sock, "%s%s.flags %s", space, iface, flags);
-            fprintf(sock, " %s.mtu %d", iface, mtu);
-            space = " ";
+            snprintf(rendered, sizeof(rendered), "%s.flags", iface);
+            flatjson_send(sock, rendered, &first_message);
+            flatjson_send(sock, flags, &first_message);
+            snprintf(rendered, sizeof(rendered), "%s.mtu", iface);
+            flatjson_send(sock, rendered, &first_message);
+            snprintf(rendered, sizeof(rendered), "%d", mtu);
+            flatjson_send(sock, rendered, &first_message);
             continue;
         }
 
         if(!skipping && details && parse_ifconfig_kv(cursor, key, flags)) {
-            char escaped[FLAGS_LEN];
-            escape(flags, escaped, sizeof(escaped));
-            fprintf(sock, " %s.%s %s", iface, key, escaped);
+            snprintf(rendered, sizeof(rendered), "%s.%s", iface, key);
+            flatjson_send(sock, rendered, &first_message);
+            flatjson_send(sock, flags, &first_message);
         }
     }
 
+    flatjson_finish_send(sock);
     fprintf(sock, "\n");
     free(output_text);
 }
@@ -179,11 +187,13 @@ void handle_list(FILE* sock, bool details) {
 void handle_configure(FILE* sock, const char* args) {
     service_send(&service_write_ibuf, WRITE_WRITE, args);
     int32_t result = service_pop(&service_write_ibuf, NULL, 0);
-    if(result != WRITE_RESPONSE_OK) {
-        fprintf(sock, "error\n");
+    if(result == WRITE_RESPONSE_OK) {
+        flatjson_send_singleton(sock, "ok");
+    } else {
+        flatjson_send_singleton(sock, "error");
     }
 
-    fprintf(sock, "ok\n");
+    fputs("\n", sock);
 }
 
 void handle_connect(FILE* sock, const char* args) {
@@ -193,24 +203,28 @@ void handle_connect(FILE* sock, const char* args) {
     
     service_send(&service_exec_ibuf, EXEC_NETSTART, args);
     int32_t result = service_pop(&service_exec_ibuf, NULL, 0);
-    if(result != EXEC_RESPONSE_OK) {
-        fprintf(sock, "error\n");
+    if(result == EXEC_RESPONSE_OK) {
+        flatjson_send_singleton(sock, "ok");
+    } else {
+        flatjson_send_singleton(sock, "error");
     }
 
-    fprintf(sock, "ok\n");
+    fputs("\n", sock);
 }
 
 void handle_disconnect(FILE* sock, const char* args) {
     char iface[IF_NAMESIZE];
     strlcpy(iface, args, sizeof(iface));
 
-    service_send(&service_write_ibuf, EXEC_IFCONFIG_DOWN, args);
-    int32_t result = service_pop(&service_write_ibuf, iface, strlen(iface));
-    if(result != EXEC_RESPONSE_OK) {
-        fprintf(sock, "error\n");
+    service_send(&service_exec_ibuf, EXEC_IFCONFIG_DOWN, args);
+    int32_t result = service_pop(&service_exec_ibuf, iface, strlen(iface));
+    if(result == EXEC_RESPONSE_OK) {
+        flatjson_send_singleton(sock, "ok");
+    } else {
+        flatjson_send_singleton(sock, "error");
     }
 
-    fprintf(sock, "ok\n");
+    fputs("\n", sock);
 }
 
 void handle(int fd) {
@@ -226,7 +240,7 @@ void handle(int fd) {
             FILE* f = fdopen(fdd, "a");
 
             char command[20];
-            char const* remainder = unescape(chomp(buf), command, sizeof(command));
+            char const* const remainder = flatjson_next(chomp(buf), command, sizeof(command), NULL);
             if(strcmp(command, "list") == 0) {
                 handle_list(f, true);
             } else if(strcmp(command, "configure") == 0) {

@@ -4,7 +4,7 @@
 #include <unistd.h>
 
 #include "service_write.h"
-#include "parse.h"
+#include "flatjson.h"
 #include "util.h"
 #include "validate.h"
 
@@ -16,7 +16,7 @@ static enum write_type configure(const char* interface, char const* args) {
     FILE* f = fopen(path, "w");
     if(f == NULL) { return WRITE_RESPONSE_ERROR; }
 
-    while((args = unescape(args, stanza, sizeof(stanza))) != NULL) {
+    while((args = flatjson_next(args, stanza, sizeof(stanza), NULL)) != NULL) {
         if(!validate_stanza(stanza)) {
             warn("Illegal stanza");
             continue;
@@ -43,8 +43,8 @@ static enum write_type autoconfigure(const char* interface) {
 }
 
 static void dispatch(struct imsgbuf* ibuf, enum write_type type, const char* msg) {
-    char interface[IF_NAMESIZE];
-    unescape(msg, interface, sizeof(interface));
+    char interface[IF_NAMESIZE] = {0};
+    flatjson_next(msg, interface, sizeof(interface), NULL);
     if(!validate_iface(interface)) {
         imsg_compose(ibuf, WRITE_RESPONSE_ERROR, 0, 0, -1, NULL, 0);
         imsg_flush(ibuf);
