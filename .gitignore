@@ -1,0 +1,5 @@
+/networkd
+/test
+/fuzzer
+/t/fuzz/out
+*.o

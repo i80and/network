@@ -1,25 +1,42 @@
+DESTDIR:=/usr/local
+MANDIR:=$(DESTDIR)/man
 DEBUG:=
 CFLAGS:=-std=c99 -Wall -Wextra -Wshadow -Wno-unused-parameter -O2 -fstack-protector-all $(DEBUG)
 
-.PHONY: clean lint fuzz test
+.PHONY: clean lint fuzz test install
 
-networkd: networkd.c flatjson.c flatjson.h util.c util.h validate.c validate.h service_exec.c service_exec.h service_write.c service_write.h
-	$(CC) $(CFLAGS) -o $@ networkd.c flatjson.c util.c validate.c service_exec.c service_write.c -lutil
+CORE_SRC=src/flatjson.c \
+         src/util.c \
+         src/validate.c
+CORE_DEPS=$(CORE_SRC) $(CORE_SRC:%.h=$.c)
+SRC=$(CORE_SRC) \
+    src/service_write.c \
+    src/service_exec.c \
+    src/networkd.c
+DEPS=$(SRC) $(CORE_DEPS) src/service_write.h src/service_exec.h
 
-test: test.c flatjson.c flatjson.h util.c util.h validate.c validate.h
-	$(CC) $(CFLAGS) -g -o $@ test.c flatjson.c util.c validate.c
+networkd: $(DEPS)
+	$(CC) $(CFLAGS) -o $@ $(SRC) -lutil
+
+test: src/test.c $(CORE_DEPS)
+	$(CC) $(CFLAGS) -g -o $@ src/test.c $(CORE_SRC)
 	./test
 
 lint:
-	cppcheck -q --std=c99 --enable=style,performance,portability,unusedFunction --inconclusive --error-exitcode=1 ./
+	cppcheck -q --std=c99 --enable=style,performance,portability,unusedFunction --inconclusive --error-exitcode=1 ./src
 	make clean && scan-build make
-	perlcritic ./lib/network.pl
+	perlcritic ./src/network-cli.pl
 
-fuzzer: fuzz.c flatjson.c flatjson.h validate.c validate.h util.c util.h
-	AFL_HARDEN=1 afl-clang $(CFLAGS) -o fuzzer fuzz.c flatjson.c validate.c util.c
+fuzzer: src/fuzz.c $(CORE_DEPS)
+	AFL_HARDEN=1 afl-clang $(CFLAGS) -o $@ src/fuzz.c $(CORE_SRC)
 
 fuzz: fuzzer
 	afl-fuzz -i t/fuzz/in -o t/fuzz/out ./fuzzer
+
+install: networkd
+	install -m755 networkd $(DESTDIR)/sbin/networkd
+	install -m755 src/network-cli.pl $(DESTDIR)/bin/network-cli
+	install -m444 networkd.8 $(MANDIR)/man8/networkd.8
 
 clean:
 	rm -f networkd test fuzzer
