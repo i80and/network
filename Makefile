@@ -18,8 +18,8 @@ DEPS=$(SRC) $(CORE_DEPS) src/service_write.h src/service_exec.h
 networkd: $(DEPS)
 	$(CC) $(CFLAGS) -o $@ $(SRC) -lutil
 
-test: src/test.c $(CORE_DEPS)
-	$(CC) $(CFLAGS) -g -o $@ src/test.c $(CORE_SRC)
+test: t/test.c $(CORE_DEPS)
+	$(CC) $(CFLAGS) -o $@ -Isrc/ t/test.c $(CORE_SRC)
 	./test
 
 lint:
